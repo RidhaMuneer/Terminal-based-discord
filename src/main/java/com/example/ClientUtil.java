@@ -1,63 +1,58 @@
 package com.example;
 
+// Ridha Muneer Kamil 20347
+// Mohammed Salih 20533
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInput;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutput;
+import java.io.ObjectOutputStream;
+import java.util.ArrayList;
 import java.time.Instant;
-import java.util.List;
+import java.time.format.DateTimeFormatter;
 import java.util.Scanner;
 import java.util.concurrent.CountDownLatch;
-
 import org.apache.zookeeper.AddWatchMode;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
 
-import com.google.protobuf.Timestamp;
-
 public class ClientUtil {
 
-    private static int counter = 0;
+    static ArrayList<String> messages = new ArrayList<String>();
 
-    public static void run() throws Exception{
-                CountDownLatch lc = new CountDownLatch(1);
-       
+    public static void run() throws Exception {
+        String name = getUsername();
+        connectToServer(name);
+    }
 
-         Watcher wc = new Watcher() {
+    public static void connectToServer(String name) throws Exception {
+        CountDownLatch lc = new CountDownLatch(1);
+        Watcher wc = new Watcher() {
             public void process(WatchedEvent event) {
-
+                
             }
         };
-
-
-
         ZooKeeper zoo = new ZooKeeper("127.0.0.1", 2181, wc);
+        createUserNode(zoo, wc, name);
+        createChatroom(zoo, wc, name);
+        while (true) {
+            sendMessage(zoo, name, lc);
+            if(lc.getCount() == 0){
+                break;
+            }
+            lc.await();
+        }
+    }
 
-
-        // Watcher watcher = new Watcher() {
-        //     public void process(WatchedEvent event) {
-        //             if(event.getType() == Watcher.Event.EventType.NodeCreated) {
-        //                 try{
-        //                     byte[] data = zoo.getData("/chatroom", wc, null); 
-        //                     Message receivedMessage = Message.parseFrom(data); 
-        //                     System.out.printf("[%s] %s: %s", receivedMessage.getTime().toString(), receivedMessage.getUsername(), receivedMessage.getContent());
-        //                 } catch(Exception e) {
-        //                     e.printStackTrace();
-        //                 }
-                       
-        //         }
-        //     }
-        // };
-
-
-        Scanner scanner = new Scanner(System.in); 
-        System.out.print("Enter your name: ");
-        String name = scanner.nextLine();
- 
-
-        
+    public static void createUserNode(ZooKeeper zoo, Watcher wc, String name) throws Exception {
         String path = "/" + name; 
         byte[] byteData = name.getBytes(); 
         Stat s = zoo.exists(path, true);
@@ -67,80 +62,149 @@ public class ClientUtil {
         else {
             zoo.setData(path, byteData, -1);
         }
+        checkForNewUsers(zoo, name);
+        getPreviousMessages(zoo, wc);
+    }
 
-        // String messagesPath = path + "/messages"; 
-        // zoo.create(messagesPath, null, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT); 
+    public static void getPreviousMessages(ZooKeeper zoo, Watcher wc) throws KeeperException, InterruptedException, ClassNotFoundException, IOException{
+        byte[] data = zoo.getData("/chatroom", wc, null); 
+        ArrayList<String> messageDB = deserialize(data);
+        for (String item : messageDB) {
+            System.out.println(item);
+        }
+    }
+
+    public static void createChatroom(ZooKeeper zoo, Watcher wc, String name) throws Exception {
         Stat chatroomStat = zoo.exists("/chatroom", false);
         if(chatroomStat == null) zoo.create("/chatroom", null, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-
-            zoo.addWatch("/chatroom", new Watcher() {
+        zoo.addWatch("/chatroom", new Watcher() {
             public void process(WatchedEvent event) {
-                    if(event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
-                        try{
-                            List<String> children = zoo.getChildren("/chatroom", false); 
-                            String childPath = "/chatroom/"+children.get(children.size() - 1); 
-                            System.out.println("+++++++++++++++++++++++++++++++++++path:"+event.getPath());
-                            byte[] data = zoo.getData(childPath, wc, null); 
-                            Message receivedMessage = Message.parseFrom(data); 
-                            // System.out.printf("[%s] %s: %s", receivedMessage.getTime().toString(), receivedMessage.getUsername(), receivedMessage.getContent());
-                            System.out.println("+++++++++++++++++++++++++++++++++++====+++++++++"+receivedMessage.getContent());
-                        } catch(Exception e) {
-                            e.printStackTrace();
+                if(event.getType() == Watcher.Event.EventType.NodeDataChanged) {
+                    try{
+                        byte[] data = zoo.getData("/chatroom", wc, null); 
+                        ArrayList<String> messageDB = deserialize(data);
+                        for (String item : messageDB) {
+                            System.out.println(item);
                         }
-                       
+                    } catch(Exception e) {
+                        e.printStackTrace();
+                    }
                 }
             }
         }, AddWatchMode.PERSISTENT);
-            // int counter = 0;
-                   Stat stat = zoo.exists("/chatroom/counter", false);
-        if (stat == null) {
-            zoo.create("/chatroom/counter", "0".getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+    }
+
+    public static void checkForNewUsers(ZooKeeper zoo, String name) throws Exception {
+        zoo.addWatch("/", new Watcher() {
+            @Override
+            public void process(WatchedEvent event) {
+                if (event.getType() != Watcher.Event.EventType.NodeCreated) {
+                    try {
+                        String connectedMessage = "- User " + name + " has been connected -";
+                        messages.add(connectedMessage);
+                        Stat stat = new Stat();
+                        byte[] currentData = zoo.getData("/chatroom", false, stat);
+                        ArrayList<String> chatroomMessages = deserialize(currentData);
+                        chatroomMessages.add(connectedMessage);
+                        byte[] listOfMessages = serialize(chatroomMessages);
+                        zoo.setData("/chatroom", listOfMessages, stat.getVersion());
+                    } catch (KeeperException.NoNodeException e) {
+                        System.out.println("Node does not exist. It might have been deleted by another process.");
+                    } catch (KeeperException.BadVersionException e) {
+                        System.out.println("Another client modified the node concurrently.");
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }, AddWatchMode.PERSISTENT);
+    }
+
+    public static void sendDisconnectedMessage(ZooKeeper zoo, String name, CountDownLatch lc) throws KeeperException, InterruptedException, IOException, ClassNotFoundException {
+        String disconnectedMessage = "- User " + name + " has been disconnected -";
+        messages.add(disconnectedMessage);
+        Stat chatroomStat = new Stat();
+        byte[] currentData = zoo.getData("/chatroom", false, chatroomStat);
+        ArrayList<String> chatroomMessages = deserialize(currentData);
+        if (!chatroomMessages.isEmpty()) {
+            String lastMessage = chatroomMessages.get(chatroomMessages.size() - 1);
+            String[] parts = lastMessage.split(":");
+            if (parts.length >= 2) {
+                String wordBeforeColon = parts[0].trim(); 
+                if (wordBeforeColon.equals(name)) {
+                    chatroomMessages.remove(chatroomMessages.size() - 1);
+                } 
+            }
         } else {
-            byte[] data = zoo.getData("/chatroom/counter", false, null);
-            counter = Integer.parseInt(new String(data));
+            System.out.println("Chatroom is empty");
         }
-            while(true) {
-                System.out.print("Enter a message: "); 
-                String msgContent = scanner.nextLine(); 
+        chatroomMessages.add(disconnectedMessage);
+        byte[] listOfMessages = serialize(chatroomMessages);
+        zoo.setData("/chatroom", listOfMessages, chatroomStat.getVersion());
+        zoo.close();
+        lc.countDown();
+    }
 
+    public static String getUsername(){
+        Scanner scanner = new Scanner(System.in);
+        System.out.print("Enter your username: ");
+        String name = scanner.nextLine();
+        return name;
+    }
 
-                Instant instant = Instant.now(); 
-                Timestamp timestamp = Timestamp.newBuilder()
-                                            .setSeconds(instant.getEpochSecond())
-                                            .setNanos(instant.getNano())
-                                            .build();
+    public static String askForMessage(){
+        Scanner scanner = new Scanner(System.in);
+        System.out.println("Enter a message: (-1 for EXIT)");
+        String message = scanner.nextLine();
+        return message;
+    }
 
-
-                Message msg = Message.newBuilder()
-                                    .setUsername(name)
-                                    .setTime(timestamp)
-                                    .setContent(msgContent)
-                                    .build();
-
-                String chatroomMsgPath = "/chatroom" + "/"+name+"message" +counter;
-                // String userMsgPath = messagesPath + "/message" + counter; 
-                byte[] data = msg.toByteArray(); 
-                
-                zoo.create(chatroomMsgPath, data, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-                // zoo.create(userMsgPath, data, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-                // zoo.setData(messagesPath, msg.toByteArray(), 0);
-                byte[] newData = String.valueOf(counter).getBytes();
-        zoo.setData("/chatroom/counter", newData, -1);
-                counter++;
-                // lc.await();
+    public static void sendMessage(ZooKeeper zoo, String name, CountDownLatch lc) throws IOException, KeeperException, InterruptedException, ClassNotFoundException {
+        String message = askForMessage();
+        if(message.equals("-1")){
+            sendDisconnectedMessage(zoo, name, lc);
         }
+        Stat stat = new Stat();
+        byte[] currentData = zoo.getData("/chatroom", false, stat);
 
+        ArrayList<String> chatroomMessages;
+
+        if (currentData == null || currentData.length == 0) {
+            chatroomMessages = new ArrayList<>();
+        } else {
+            chatroomMessages = deserialize(currentData);
+        }
     
-    // lc.await();
+        Instant currentTimestamp = Instant.now();
+        DateTimeFormatter formatter = DateTimeFormatter.ISO_INSTANT;
+        String formattedTimestamp = formatter.format(currentTimestamp);
+        chatroomMessages.add(name + ": [" + formattedTimestamp + "] " + message);
+
+        byte[] listOfMessages = serialize(chatroomMessages);
+
+        zoo.setData("/chatroom", listOfMessages, stat.getVersion());
     }
 
-      private static void initializeCounter() throws KeeperException, InterruptedException {
- 
+    private static byte[] serialize(Object obj) throws IOException {
+        try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            ObjectOutput out = new ObjectOutputStream(bos)) {
+            out.writeObject(obj);
+            return bos.toByteArray();
+        }
     }
 
-    private static void updateCounter() throws KeeperException, InterruptedException {
-        
-    }
+    @SuppressWarnings("unchecked")
+    private static ArrayList<String> deserialize(byte[] data) throws IOException, ClassNotFoundException {
+        if (data == null || data.length == 0) {
+            return new ArrayList<>();
+        }
+        try (ByteArrayInputStream bis = new ByteArrayInputStream(data);
+            ObjectInput in = new ObjectInputStream(bis)) {
+            return (ArrayList<String>) in.readObject();
+        } catch (Exception e) {
+            System.err.println("Error during deserialization:");
+            e.printStackTrace();
+            throw e; 
+        }
+    }    
 }
-
-
