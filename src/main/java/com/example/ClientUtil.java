@@ -83,9 +83,7 @@ public class ClientUtil {
                     try{
                         byte[] data = zoo.getData("/chatroom", wc, null); 
                         ArrayList<String> messageDB = deserialize(data);
-                        for (String item : messageDB) {
-                            System.out.println(item);
-                        }
+                        System.out.println(messageDB.get(messageDB.size() - 1));
                     } catch(Exception e) {
                         e.printStackTrace();
                     }
